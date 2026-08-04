@@ -11,30 +11,51 @@ permissions:
 jobs:
 
   detect-changes:
+
     runs-on: ubuntu-latest
 
     outputs:
       app: ${{ steps.detect.outputs.app }}
+      build: ${{ steps.detect.outputs.build }}
 
     steps:
 
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - id: detect
         shell: bash
         run: |
 
-          APP=$(git diff --name-only HEAD^ HEAD \
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            BASE=$(git rev-list --max-parents=0 HEAD)
+          else
+            BASE=${{ github.event.before }}
+          fi
+
+          FILES=$(git diff --name-only $BASE ${{ github.sha }})
+
+          echo "$FILES"
+
+          APP=$(echo "$FILES" \
             | grep '^applications/' \
             | cut -d/ -f2 \
             | sort -u \
-            | head -1)
-
-          echo "Detected Application: $APP"
+            | head -1 || true)
 
           echo "app=$APP" >> $GITHUB_OUTPUT
+
+          BUILD=false
+
+          if echo "$FILES" | grep -Eq "^applications/${APP}/app/|^applications/${APP}/Dockerfile|^applications/${APP}/app/requirements.txt"; then
+            BUILD=true
+          fi
+
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+
+          echo "Application : $APP"
+          echo "Build Image : $BUILD"
 
   build-and-deploy:
 
@@ -52,45 +73,46 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Login to DockerHub
+        if: needs.detect-changes.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
       - name: Build Docker Image
+        if: needs.detect-changes.outputs.build == 'true'
         run: |
-
           docker build \
             -t aleemahmad2/${APP}:${{ github.sha }} \
             applications/${APP}/app
 
       - name: Push Docker Image
+        if: needs.detect-changes.outputs.build == 'true'
         run: |
-
-          docker push \
-            aleemahmad2/${APP}:${{ github.sha }}
+          docker push aleemahmad2/${APP}:${{ github.sha }}
 
       - name: Install yq
+        if: needs.detect-changes.outputs.build == 'true'
         run: |
-
           sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-
           sudo chmod +x /usr/local/bin/yq
 
       - name: Update Helm Values
+        if: needs.detect-changes.outputs.build == 'true'
         run: |
 
           yq -i '.image.repository = "aleemahmad2/'"${APP}"'"' \
-            applications/${APP}/helm/values.yaml
+          applications/${APP}/helm/values.yaml
 
           yq -i '.image.tag = "'"${{ github.sha }}"'"' \
-            applications/${APP}/helm/values.yaml
+          applications/${APP}/helm/values.yaml
 
-      - name: Commit Changes
+      - name: Commit Updated Helm Values
+        if: needs.detect-changes.outputs.build == 'true'
         run: |
 
-          git config user.name github-actions
-          git config user.email github-actions@github.com
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
 
           git add applications/${APP}/helm/values.yaml
 

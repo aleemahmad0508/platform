@@ -1,0 +1,5 @@
+shared/monitoring/alertmanager-secret.yaml
+
+.venv/
+__pycache__/
+*.pyc

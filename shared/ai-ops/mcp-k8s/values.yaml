@@ -1,0 +1,23 @@
+replicaCount: 1
+
+image:
+  repository: aleemahmad2/mcp-server
+  tag: v11
+  pullPolicy: IfNotPresent
+
+service:
+  type: NodePort
+  port: 8000
+  targetPort: 8000
+  nodePort: 30080
+
+serviceAccount:
+  name: mcp-service-account
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "250m"
+    memory: "256Mi"

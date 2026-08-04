@@ -1,0 +1,30 @@
+app:
+  name: payment-api
+  namespace: payment
+
+replicaCount: 3
+
+image:
+  repository: aleemahmad2/payment-api
+  tag: "v1"
+  pullPolicy: IfNotPresent
+
+container:
+  port: 5000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: payment.local
+
+persistence:
+  enabled: true
+  storage: 1Gi
+
+probe:
+  interval: 30s

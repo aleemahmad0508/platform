@@ -1,0 +1,72 @@
+apiVersion: opentelemetry.io/v1beta1
+kind: OpenTelemetryCollector
+
+metadata:
+  name: otel-collector
+  namespace: observability
+
+spec:
+  mode: deployment
+
+  image: otel/opentelemetry-collector-contrib:0.156.0
+
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      protocol: TCP
+      targetPort: 4317
+
+    - name: otlp-http
+      port: 4318
+      protocol: TCP
+      targetPort: 4318
+    - name: prometheus
+      port: 8889
+      targetPort: 8889
+
+  config:
+
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+
+    processors:
+      batch: {}
+
+    exporters:
+      debug:
+        verbosity: detailed
+
+      prometheus:
+        endpoint: 0.0.0.0:8889
+
+      otlp/jaeger:
+        endpoint: jaeger.observability.svc.cluster.local:4317
+        tls:
+          insecure: true
+
+    service:
+
+      pipelines:
+
+        metrics:
+          receivers:
+            - otlp
+          processors:
+            - batch
+          exporters:
+            - debug
+            - prometheus
+
+        traces:
+          receivers:
+            - otlp
+          processors:
+            - batch
+          exporters:
+            - debug
+            - otlp/jaeger

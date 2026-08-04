@@ -1,0 +1,7 @@
+apiVersion: v2
+name: mcp-k8s
+description: Helm chart for Kubernetes MCP Server
+type: application
+
+version: 0.1.3
+appVersion: "1.0.3"

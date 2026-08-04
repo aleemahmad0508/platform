@@ -1,0 +1,30 @@
+app:
+  name: flask
+  namespace: flask
+
+replicaCount: 3
+
+image:
+  repository: aleemahmad2/flask-demo
+  tag: "v2"
+  pullPolicy: IfNotPresent
+
+container:
+  port: 5000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 5000
+
+ingress:
+  enabled: true
+  className: nginx
+  host: flask.local
+
+persistence:
+  enabled: true
+  storage: 1Gi
+
+probe:
+  interval: 30s

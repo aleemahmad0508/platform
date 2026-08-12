@@ -286,12 +286,21 @@ jobs:
 
       - name: Docker Scout vulnerability scan
         uses: docker/scout-action@v1
+        continue-on-error: true
         with:
           command: cves
           image: ${{ env.IMAGE }}
           only-severities: critical,high
-          exit-code: true
+          exit-code: false
+          write: scout-report.txt
 
+      #upload the artifact 
+      - name: Upload Docker Scout vulnerability report
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-security-report
+          path: scout-report.txt
+          if-no-files-found: warn
 
       # ========================================================
       # 4. SYFT

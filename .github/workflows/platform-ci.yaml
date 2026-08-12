@@ -38,7 +38,7 @@ jobs:
 
 
       # --------------------------------------------------------
-      # Detect create/update/delete
+      # Detect create / update / delete
       # --------------------------------------------------------
 
       - name: Detect changes
@@ -62,9 +62,7 @@ jobs:
           # ----------------------------------------------------
 
           if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-
             BASE=$(git rev-list --max-parents=0 HEAD)
-
           fi
 
           echo "Using BASE: $BASE"
@@ -149,7 +147,7 @@ jobs:
 
 
           # IMPORTANT:
-          # If application is deleted, NEVER build it.
+          # Deleted applications are NEVER built.
 
           if [ -n "$APP" ] && [ -z "$DELETED_APP" ]; then
 
@@ -194,14 +192,6 @@ jobs:
 
     needs: detect-changes
 
-    # ----------------------------------------------------------
-    # Run ONLY when:
-    #
-    # 1. An application exists
-    # 2. Application requires a build
-    # 3. Application is NOT being deleted
-    # ----------------------------------------------------------
-
     if: |
       needs.detect-changes.outputs.app != '' &&
       needs.detect-changes.outputs.build == 'true' &&
@@ -237,9 +227,7 @@ jobs:
 
       - name: Install Bandit
         run: |
-
           python -m pip install --upgrade pip
-
           pip install bandit
 
 
@@ -282,25 +270,42 @@ jobs:
       # ========================================================
       # 3. DOCKER SCOUT
       # Vulnerability scanning
+      #
+      # IMPORTANT:
+      # Scout reports vulnerabilities but DOES NOT stop pipeline.
       # ========================================================
 
       - name: Docker Scout vulnerability scan
-        uses: docker/scout-action@v1
         continue-on-error: true
-        with:
-          command: cves
-          image: ${{ env.IMAGE }}
-          only-severities: critical,high
-          exit-code: false
-          write: scout-report.txt
+        run: |
 
-      #upload the artifact 
+          echo "=========================================="
+          echo "       DOCKER SCOUT SECURITY SCAN"
+          echo "=========================================="
+
+          docker scout cves \
+            --only-severity critical,high \
+            --format markdown \
+            --output scout-report.md \
+            "$IMAGE"
+
+          echo ""
+          echo "Scout report generated:"
+          echo "scout-report.md"
+
+
+      # ========================================================
+      # UPLOAD DOCKER SCOUT REPORT
+      # ========================================================
+
       - name: Upload Docker Scout vulnerability report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP }}-security-report
-          path: scout-report.txt
+          path: scout-report.md
           if-no-files-found: warn
+
 
       # ========================================================
       # 4. SYFT
@@ -316,15 +321,16 @@ jobs:
 
 
       # ========================================================
-      # 5. GITHUB ARTIFACT
-      # Store SBOM
+      # 5. UPLOAD SBOM
       # ========================================================
 
       - name: Upload SBOM to GitHub Artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP }}-sbom
           path: ${{ env.APP }}-sbom.json
+          if-no-files-found: warn
 
 
       # ========================================================
@@ -349,7 +355,27 @@ jobs:
 
 
       # ========================================================
-      # 8. COSIGN
+      # 8. GET IMMUTABLE IMAGE DIGEST
+      # ========================================================
+
+      - name: Get image digest
+        id: digest
+        run: |
+
+          echo "Getting immutable image digest..."
+
+          DIGEST=$(docker inspect \
+            --format='{{index .RepoDigests 0}}' \
+            "$IMAGE")
+
+          echo "Image digest:"
+          echo "$DIGEST"
+
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+
+      # ========================================================
+      # 9. COSIGN SIGN IMAGE
       # Keyless signing using GitHub OIDC
       # ========================================================
 
@@ -359,24 +385,38 @@ jobs:
 
         run: |
 
-          echo "Signing image:"
-          echo "$IMAGE"
+          echo "=========================================="
+          echo "             COSIGN SIGNING"
+          echo "=========================================="
 
-          cosign sign "$IMAGE"
+          echo "Signing:"
+          echo "${{ steps.digest.outputs.digest }}"
+
+          cosign sign \
+            "${{ steps.digest.outputs.digest }}"
 
 
       # ========================================================
-      # 9. VERIFY COSIGN SIGNATURE
+      # 10. VERIFY COSIGN SIGNATURE
       # ========================================================
 
       - name: Verify Docker Image Signature
         run: |
 
-          echo "Verifying image signature..."
+          echo "=========================================="
+          echo "          COSIGN VERIFICATION"
+          echo "=========================================="
 
-          cosign verify "$IMAGE" \
-            --certificate-identity-regexp 'https://github.com/.+' \
-            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+          echo "Verifying:"
+          echo "${{ steps.digest.outputs.digest }}"
+
+
+          cosign verify \
+            "${{ steps.digest.outputs.digest }}" \
+            --certificate-identity-regexp \
+              'https://github.com/aleemahmad0508/platform/.+' \
+            --certificate-oidc-issuer \
+              'https://token.actions.githubusercontent.com'
 
 
       # ========================================================
@@ -403,6 +443,7 @@ jobs:
         run: |
 
           echo "Updating Helm values..."
+
 
           yq -i \
             '.image.repository = "aleemahmad2/'"${APP}"'"' \
@@ -435,10 +476,6 @@ jobs:
             applications/${APP}/helm/values.yaml
 
 
-          # ----------------------------------------------------
-          # If there is nothing to commit, don't fail
-          # ----------------------------------------------------
-
           if git diff --cached --quiet; then
 
             echo "No Helm changes to commit."
@@ -447,7 +484,6 @@ jobs:
 
             git commit \
               -m "Update ${APP} image to ${{ github.sha }}"
-
 
             echo "Helm values committed."
 
@@ -473,10 +509,6 @@ jobs:
   delete-application:
 
     needs: detect-changes
-
-    # ----------------------------------------------------------
-    # Run ONLY when an application was deleted
-    # ----------------------------------------------------------
 
     if: needs.detect-changes.outputs.deleted_app != ''
 
@@ -591,11 +623,6 @@ jobs:
           git add -A
 
 
-          # ----------------------------------------------------
-          # IMPORTANT:
-          # Do not fail if there is nothing to commit.
-          # ----------------------------------------------------
-
           if git diff --cached --quiet; then
 
             echo "=========================================="
@@ -620,20 +647,10 @@ jobs:
       - name: Push deletion cleanup
         run: |
 
-          # ----------------------------------------------------
-          # Check whether there is a commit to push
-          # ----------------------------------------------------
-
           if git log -1 --pretty=%B | grep -q \
             "Cleanup deleted application ${DELETED_APP}"; then
 
             echo "Pushing deletion cleanup..."
-
-            # --------------------------------------------------
-            # IMPORTANT:
-            # Do not fail the entire workflow if the push
-            # encounters a race/already-updated branch.
-            # --------------------------------------------------
 
             if git push; then
 

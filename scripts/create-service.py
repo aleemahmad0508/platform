@@ -11,6 +11,10 @@ TEMPLATE_APP = ROOT / "templates" / "app"
 TEMPLATE_HELM = ROOT / "templates" / "helm"
 
 APPLICATIONS = ROOT / "applications"
+print(ROOT)
+print(TEMPLATE_APP)
+
+print(TEMPLATE_HELM)
 
 # -----------------------------
 # User Input
@@ -38,13 +42,17 @@ if service_port == "":
 if host == "":
     host = f"{service_name}.local"
 
-# -----------------------------
-# Destination Paths
-# -----------------------------
+# # -----------------------------
+# # Destination Paths
+# # -----------------------------
 service_dir = APPLICATIONS / service_name
 
 app_dir = service_dir / "app"
 helm_dir = service_dir / "helm"
+
+print(service_dir)
+print(app_dir)
+print(helm_dir)
 
 # -----------------------------
 # Check Existing Service
@@ -172,7 +180,8 @@ print("\nConfiguration completed successfully.")
 
 # -----------------------------
 # Summary
-# -----------------------------
+# -----------------------
+# ------
 print("\n" + "=" * 60)
 print("SERVICE CREATED SUCCESSFULLY")
 print("=" * 60)

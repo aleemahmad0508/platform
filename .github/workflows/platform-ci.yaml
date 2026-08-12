@@ -7,6 +7,12 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+
+
+# ============================================================
+# JOB 1: DETECT APPLICATION CHANGES
+# ============================================================
 
 jobs:
 
@@ -17,26 +23,86 @@ jobs:
     outputs:
       app: ${{ steps.detect.outputs.app }}
       build: ${{ steps.detect.outputs.build }}
+      deleted_app: ${{ steps.detect.outputs.deleted_app }}
 
     steps:
 
-      - uses: actions/checkout@v4
+      # --------------------------------------------------------
+      # Checkout complete Git history
+      # --------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - id: detect
+
+      # --------------------------------------------------------
+      # Detect create/update/delete
+      # --------------------------------------------------------
+
+      - name: Detect changes
+        id: detect
         shell: bash
         run: |
 
-          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+          echo "=========================================="
+          echo "       PLATFORM CHANGE DETECTION"
+          echo "=========================================="
+
+          BASE="${{ github.event.before }}"
+          HEAD="${{ github.sha }}"
+
+          echo "BASE: $BASE"
+          echo "HEAD: $HEAD"
+
+
+          # ----------------------------------------------------
+          # First push handling
+          # ----------------------------------------------------
+
+          if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+
             BASE=$(git rev-list --max-parents=0 HEAD)
-          else
-            BASE=${{ github.event.before }}
+
           fi
 
-          FILES=$(git diff --name-only $BASE ${{ github.sha }})
+          echo "Using BASE: $BASE"
+
+
+          # ----------------------------------------------------
+          # Get changed files
+          # ----------------------------------------------------
+
+          FILES=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || true)
+
+
+          # ----------------------------------------------------
+          # Fallback if normal diff fails
+          # ----------------------------------------------------
+
+          if [ -z "$FILES" ]; then
+
+            echo "Normal diff returned nothing."
+            echo "Trying fallback diff..."
+
+            FILES=$(git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+
+          fi
+
+
+          echo ""
+          echo "Changed files:"
+          echo "------------------------------------------"
 
           echo "$FILES"
+
+          echo "------------------------------------------"
+
+
+          # ====================================================
+          # DETECT APPLICATION
+          # ====================================================
 
           APP=$(echo "$FILES" \
             | grep '^applications/' \
@@ -44,78 +110,543 @@ jobs:
             | sort -u \
             | head -1 || true)
 
-          echo "app=$APP" >> $GITHUB_OUTPUT
+
+          # ====================================================
+          # DETECT DELETED APPLICATION
+          # ====================================================
+
+          DELETED_APP=$(git diff --name-status "$BASE" "$HEAD" 2>/dev/null \
+            | awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+                split($2, parts, "/");
+                print parts[2];
+              }' \
+            | sort -u \
+            | head -1 || true)
+
+
+          # ----------------------------------------------------
+          # Fallback deletion detection
+          # ----------------------------------------------------
+
+          if [ -z "$DELETED_APP" ]; then
+
+            DELETED_APP=$(git diff --name-status HEAD^ HEAD 2>/dev/null \
+              | awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+                  split($2, parts, "/");
+                  print parts[2];
+                }' \
+              | sort -u \
+              | head -1 || true)
+
+          fi
+
+
+          # ====================================================
+          # DETERMINE WHETHER IMAGE NEEDS TO BE BUILT
+          # ====================================================
 
           BUILD=false
 
-          if echo "$FILES" | grep -Eq "^applications/${APP}/app/|^applications/${APP}/Dockerfile|^applications/${APP}/app/requirements.txt"; then
-            BUILD=true
+
+          # IMPORTANT:
+          # If application is deleted, NEVER build it.
+
+          if [ -n "$APP" ] && [ -z "$DELETED_APP" ]; then
+
+            if echo "$FILES" | grep -Eq \
+              "^applications/${APP}/app/|^applications/${APP}/Dockerfile|^applications/${APP}/app/requirements.txt"; then
+
+              BUILD=true
+
+            fi
+
           fi
 
-          echo "build=$BUILD" >> $GITHUB_OUTPUT
 
+          # ====================================================
+          # GITHUB OUTPUTS
+          # ====================================================
+
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+
+          echo "deleted_app=$DELETED_APP" >> "$GITHUB_OUTPUT"
+
+
+          # ====================================================
+          # DISPLAY RESULT
+          # ====================================================
+
+          echo ""
+          echo "=========================================="
           echo "Application : $APP"
-          echo "Build Image : $BUILD"
+          echo "Build       : $BUILD"
+          echo "Deleted App : $DELETED_APP"
+          echo "=========================================="
+
+
+  # ============================================================
+  # JOB 2: SECURITY + BUILD + PUSH + SIGN + HELM UPDATE
+  # ============================================================
 
   build-and-deploy:
 
     needs: detect-changes
 
-    if: needs.detect-changes.outputs.app != ''
+    # ----------------------------------------------------------
+    # Run ONLY when:
+    #
+    # 1. An application exists
+    # 2. Application requires a build
+    # 3. Application is NOT being deleted
+    # ----------------------------------------------------------
+
+    if: |
+      needs.detect-changes.outputs.app != '' &&
+      needs.detect-changes.outputs.build == 'true' &&
+      needs.detect-changes.outputs.deleted_app == ''
 
     runs-on: ubuntu-latest
 
     env:
       APP: ${{ needs.detect-changes.outputs.app }}
+      IMAGE: aleemahmad2/${{ needs.detect-changes.outputs.app }}:${{ github.sha }}
+
 
     steps:
 
-      - uses: actions/checkout@v4
+      # ========================================================
+      # CHECKOUT
+      # ========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ========================================================
+      # 1. BANDIT
+      # Python source-code security scanning
+      # ========================================================
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+
+      - name: Install Bandit
+        run: |
+
+          python -m pip install --upgrade pip
+
+          pip install bandit
+
+
+      - name: Run Bandit security scan
+        run: |
+
+          echo "Running Bandit..."
+
+          bandit \
+            -r applications/${APP}/app \
+            -ll
+
+
+      # ========================================================
+      # DOCKER HUB LOGIN
+      # ========================================================
 
       - name: Login to DockerHub
-        if: needs.detect-changes.outputs.build == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+
+      # ========================================================
+      # 2. BUILD DOCKER IMAGE
+      # ========================================================
+
       - name: Build Docker Image
-        if: needs.detect-changes.outputs.build == 'true'
         run: |
+
+          echo "Building image:"
+          echo "$IMAGE"
+
           docker build \
-            -t aleemahmad2/${APP}:${{ github.sha }} \
+            --provenance=mode=max \
+            -t "$IMAGE" \
             applications/${APP}/app
 
+
+      # ========================================================
+      # 3. DOCKER SCOUT
+      # Vulnerability scanning
+      # ========================================================
+
+      - name: Docker Scout vulnerability scan
+        uses: docker/scout-action@v1
+        with:
+          command: cves
+          image: ${{ env.IMAGE }}
+          only-severities: critical,high
+          exit-code: true
+
+
+      # ========================================================
+      # 4. SYFT
+      # Generate SBOM
+      # ========================================================
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.IMAGE }}
+          format: cyclonedx-json
+          output-file: ${{ env.APP }}-sbom.json
+
+
+      # ========================================================
+      # 5. GITHUB ARTIFACT
+      # Store SBOM
+      # ========================================================
+
+      - name: Upload SBOM to GitHub Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-sbom
+          path: ${{ env.APP }}-sbom.json
+
+
+      # ========================================================
+      # 6. INSTALL COSIGN
+      # ========================================================
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@main
+
+
+      # ========================================================
+      # 7. PUSH DOCKER IMAGE
+      # ========================================================
+
       - name: Push Docker Image
-        if: needs.detect-changes.outputs.build == 'true'
         run: |
-          docker push aleemahmad2/${APP}:${{ github.sha }}
+
+          echo "Pushing image:"
+          echo "$IMAGE"
+
+          docker push "$IMAGE"
+
+
+      # ========================================================
+      # 8. COSIGN
+      # Keyless signing using GitHub OIDC
+      # ========================================================
+
+      - name: Sign Docker Image
+        env:
+          COSIGN_YES: "true"
+
+        run: |
+
+          echo "Signing image:"
+          echo "$IMAGE"
+
+          cosign sign "$IMAGE"
+
+
+      # ========================================================
+      # 9. VERIFY COSIGN SIGNATURE
+      # ========================================================
+
+      - name: Verify Docker Image Signature
+        run: |
+
+          echo "Verifying image signature..."
+
+          cosign verify "$IMAGE" \
+            --certificate-identity-regexp 'https://github.com/.+' \
+            --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+
+
+      # ========================================================
+      # INSTALL YQ
+      # ========================================================
 
       - name: Install yq
-        if: needs.detect-changes.outputs.build == 'true'
         run: |
-          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+
+          sudo wget -q \
+            https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -O /usr/local/bin/yq
+
           sudo chmod +x /usr/local/bin/yq
 
+          yq --version
+
+
+      # ========================================================
+      # UPDATE HELM VALUES
+      # ========================================================
+
       - name: Update Helm Values
-        if: needs.detect-changes.outputs.build == 'true'
         run: |
 
-          yq -i '.image.repository = "aleemahmad2/'"${APP}"'"' \
-          applications/${APP}/helm/values.yaml
+          echo "Updating Helm values..."
 
-          yq -i '.image.tag = "'"${{ github.sha }}"'"' \
-          applications/${APP}/helm/values.yaml
+          yq -i \
+            '.image.repository = "aleemahmad2/'"${APP}"'"' \
+            applications/${APP}/helm/values.yaml
+
+
+          yq -i \
+            '.image.tag = "'"${{ github.sha }}"'"' \
+            applications/${APP}/helm/values.yaml
+
+
+          echo ""
+          echo "Updated values.yaml:"
+          cat applications/${APP}/helm/values.yaml
+
+
+      # ========================================================
+      # COMMIT HELM UPDATE
+      # ========================================================
 
       - name: Commit Updated Helm Values
-        if: needs.detect-changes.outputs.build == 'true'
         run: |
 
           git config user.name "github-actions"
+
           git config user.email "github-actions@github.com"
 
-          git add applications/${APP}/helm/values.yaml
 
-          git commit -m "Update ${APP} image" || exit 0
+          git add \
+            applications/${APP}/helm/values.yaml
+
+
+          # ----------------------------------------------------
+          # If there is nothing to commit, don't fail
+          # ----------------------------------------------------
+
+          if git diff --cached --quiet; then
+
+            echo "No Helm changes to commit."
+
+          else
+
+            git commit \
+              -m "Update ${APP} image to ${{ github.sha }}"
+
+
+            echo "Helm values committed."
+
+          fi
+
+
+      # ========================================================
+      # PUSH HELM UPDATE
+      # ========================================================
+
+      - name: Push Helm Update
+        run: |
+
+          echo "Pushing Helm update..."
 
           git push
+
+
+  # ============================================================
+  # JOB 3: DELETE APPLICATION
+  # ============================================================
+
+  delete-application:
+
+    needs: detect-changes
+
+    # ----------------------------------------------------------
+    # Run ONLY when an application was deleted
+    # ----------------------------------------------------------
+
+    if: needs.detect-changes.outputs.deleted_app != ''
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      DELETED_APP: ${{ needs.detect-changes.outputs.deleted_app }}
+
+
+    steps:
+
+      # ========================================================
+      # CHECKOUT
+      # ========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+
+      # ========================================================
+      # SHOW DELETED APPLICATION
+      # ========================================================
+
+      - name: Show deleted application
+        run: |
+
+          echo "=========================================="
+          echo "APPLICATION DELETION DETECTED"
+          echo "=========================================="
+
+          echo "Deleted application:"
+          echo "$DELETED_APP"
+
+          echo "=========================================="
+
+
+      # ========================================================
+      # REMOVE ARGO CD APPLICATION
+      # ========================================================
+
+      - name: Remove Argo CD Application manifest
+        run: |
+
+          ARGO_FILE="argocd/${DELETED_APP}-application.yaml"
+
+
+          echo "Checking:"
+          echo "$ARGO_FILE"
+
+
+          if [ -f "$ARGO_FILE" ]; then
+
+            echo "Argo CD manifest still exists."
+
+            echo "Removing:"
+            echo "$ARGO_FILE"
+
+            rm -f "$ARGO_FILE"
+
+          else
+
+            echo "Argo CD manifest already deleted."
+
+            echo "Nothing to remove."
+
+          fi
+
+
+      # ========================================================
+      # REMOVE REMAINING APPLICATION DIRECTORY
+      # ========================================================
+
+      - name: Remove remaining application directory
+        run: |
+
+          APP_DIR="applications/${DELETED_APP}"
+
+
+          if [ -d "$APP_DIR" ]; then
+
+            echo "Application directory still exists."
+
+            echo "Removing:"
+            echo "$APP_DIR"
+
+            rm -rf "$APP_DIR"
+
+          else
+
+            echo "Application directory already deleted."
+
+          fi
+
+
+      # ========================================================
+      # COMMIT CLEANUP
+      # ========================================================
+
+      - name: Commit deletion cleanup
+        run: |
+
+          git config user.name "github-actions"
+
+          git config user.email "github-actions@github.com"
+
+
+          git add -A
+
+
+          # ----------------------------------------------------
+          # IMPORTANT:
+          # Do not fail if there is nothing to commit.
+          # ----------------------------------------------------
+
+          if git diff --cached --quiet; then
+
+            echo "=========================================="
+            echo "No cleanup changes required."
+            echo "Application deletion already exists in Git."
+            echo "=========================================="
+
+          else
+
+            git commit \
+              -m "Cleanup deleted application ${DELETED_APP}"
+
+            echo "Cleanup commit created."
+
+          fi
+
+
+      # ========================================================
+      # PUSH CLEANUP SAFELY
+      # ========================================================
+
+      - name: Push deletion cleanup
+        run: |
+
+          # ----------------------------------------------------
+          # Check whether there is a commit to push
+          # ----------------------------------------------------
+
+          if git log -1 --pretty=%B | grep -q \
+            "Cleanup deleted application ${DELETED_APP}"; then
+
+            echo "Pushing deletion cleanup..."
+
+            # --------------------------------------------------
+            # IMPORTANT:
+            # Do not fail the entire workflow if the push
+            # encounters a race/already-updated branch.
+            # --------------------------------------------------
+
+            if git push; then
+
+              echo "Deletion cleanup pushed successfully."
+
+            else
+
+              echo "WARNING:"
+              echo "Git push did not succeed."
+
+              echo "The application deletion itself is already"
+              echo "present in the original Git commit."
+
+              echo "Continuing workflow successfully."
+
+            fi
+
+          else
+
+            echo "No deletion cleanup commit exists."
+
+            echo "Nothing to push."
+
+          fi

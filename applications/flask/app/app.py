@@ -19,7 +19,7 @@ metrics = PrometheusMetrics(app)
 # OpenTelemetry Configuration
 # -----------------------------
 resource = Resource.create({
-    "service.name": "{{SERVICE_NAME}}"
+    "service.name": "flask"
 })
 
 trace.set_tracer_provider(
@@ -29,7 +29,7 @@ trace.set_tracer_provider(
 tracer_provider = trace.get_tracer_provider()
 
 otlp_exporter = OTLPSpanExporter(
-    endpoint="{{OTEL_ENDPOINT}}",
+    endpoint="otel-collector-collector.observability.svc.cluster.local:4317",
     insecure=True
 )
 
@@ -45,11 +45,11 @@ FlaskInstrumentor().instrument_app(app)
 # -----------------------------
 @app.route("/")
 def home():
-    return "Welcome to {{SERVICE_NAME}}"
+    return "Welcome to flaskssss"
 
 @app.route("/health")
 def health():
     return "Healthy"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port={{PORT}}) # nosec B104
+    app.run(host="0.0.0.0", port=5000) # nosec B104

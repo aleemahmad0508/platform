@@ -11,11 +11,11 @@ spec:
   source:
     repoURL: https://github.com/aleemahmad0508/platform.git
     targetRevision: master
-    path: templates/helm
+    path: applications/flask/helm
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: flask
+    namespace: flaskk
 
   syncPolicy:
     automated:

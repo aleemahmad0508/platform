@@ -1,0 +1,137 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+
+metadata:
+  name: platform-security-policies
+
+  annotations:
+    policies.kyverno.io/title: Platform Security Policies
+    policies.kyverno.io/category: Platform Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: Pod
+    policies.kyverno.io/description: >-
+      Security policies for the platform Kubernetes cluster.
+      These rules enforce secure container images, non-privileged
+      execution, non-root containers, resource configuration,
+      and trusted container registries.
+
+spec:
+
+  # ============================================================
+  # EVALUATE EXISTING RESOURCES
+  # ============================================================
+
+  background: true
+
+  # ============================================================
+  # ENFORCEMENT
+  #
+  # Violating resources will be rejected.
+  # ============================================================
+
+  validationFailureAction: Enforce
+
+  rules:
+
+    # ============================================================
+    # POLICY 1
+    # DISALLOW latest IMAGE TAG
+    # ============================================================
+
+    - name: disallow-latest-tag
+
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      validate:
+        message: >-
+          Using the mutable 'latest' image tag is not allowed.
+          Use an immutable Git commit SHA image tag or image digest.
+
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+
+
+    # ============================================================
+    # POLICY 2
+    # DISALLOW PRIVILEGED CONTAINERS
+    # ============================================================
+
+    - name: disallow-privileged
+
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      validate:
+        message: >-
+          Privileged containers are not allowed in the platform cluster.
+
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  =(privileged): false
+
+
+    # ============================================================
+    # POLICY 3
+    # REQUIRE NON-ROOT CONTAINERS
+    # ============================================================
+
+    - name: require-run-as-non-root
+
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      validate:
+        message: >-
+          Containers must explicitly run as a non-root user.
+          Set securityContext.runAsNonRoot: true.
+
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+
+
+    # ============================================================
+    # POLICY 4
+    # REQUIRE CPU AND MEMORY RESOURCES
+    # ============================================================
+
+    - name: require-resource-requests-and-limits
+
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+
+      validate:
+        message: >-
+          Every container must define CPU and memory requests and limits.
+
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    cpu: "?*"
+                    memory: "?*"
+                  limits:
+                    cpu: "?*"
+                    memory: "?*"
+
+
+   

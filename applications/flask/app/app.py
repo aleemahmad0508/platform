@@ -45,11 +45,11 @@ FlaskInstrumentor().instrument_app(app)
 # -----------------------------
 @app.route("/")
 def home():
-    return "Welcome to flask baloach shahb"
+    return "Welcome to flask"
 
 @app.route("/health")
 def health():
-    return "Healthy"
+    return "Healthy flaskk is here "
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000) # nosec B104

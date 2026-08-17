@@ -9,7 +9,6 @@ permissions:
   contents: write
   id-token: write
 
-
 # ============================================================
 # JOB 1: DETECT APPLICATION CHANGES
 # ============================================================
@@ -146,7 +145,6 @@ jobs:
           BUILD=false
 
 
-          # IMPORTANT:
           # Deleted applications are NEVER built.
 
           if [ -n "$APP" ] && [ -z "$DELETED_APP" ]; then
@@ -199,10 +197,13 @@ jobs:
 
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+      id-token: write
+
     env:
       APP: ${{ needs.detect-changes.outputs.app }}
       IMAGE: aleemahmad2/${{ needs.detect-changes.outputs.app }}:${{ github.sha }}
-
 
     steps:
 
@@ -212,6 +213,8 @@ jobs:
 
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
 
       # ========================================================
@@ -234,10 +237,12 @@ jobs:
       - name: Run Bandit security scan
         run: |
 
-          echo "Running Bandit..."
+          echo "=========================================="
+          echo "             BANDIT SECURITY"
+          echo "=========================================="
 
           bandit \
-            -r applications/${APP}/app \
+            -r "applications/${APP}/app" \
             -ll
 
 
@@ -259,20 +264,42 @@ jobs:
       - name: Build Docker Image
         run: |
 
-          echo "Building image:"
+          echo "=========================================="
+          echo "             DOCKER BUILD"
+          echo "=========================================="
+
+          echo "Building:"
           echo "$IMAGE"
 
           docker build \
             -t "$IMAGE" \
-            applications/${APP}/app
+            "applications/${APP}/app"
 
 
       # ========================================================
-      # 3. DOCKER SCOUT
-      # Vulnerability scanning
+      # 3. INSTALL / UPDATE DOCKER SCOUT
+      # ========================================================
+
+      - name: Install Docker Scout
+        run: |
+
+          echo "=========================================="
+          echo "        INSTALLING DOCKER SCOUT"
+          echo "=========================================="
+
+          curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh \
+            -o /tmp/install-scout.sh
+
+          sudo sh /tmp/install-scout.sh
+
+          docker scout version
+
+
+      # ========================================================
+      # 4. DOCKER SCOUT VULNERABILITY SCAN
       #
       # IMPORTANT:
-      # Scout reports vulnerabilities but DOES NOT stop pipeline.
+      # Vulnerabilities DO NOT stop pipeline.
       # ========================================================
 
       - name: Docker Scout vulnerability scan
@@ -287,15 +314,24 @@ jobs:
             --only-severity critical,high \
             --format markdown \
             --output scout-report.md \
-            "$IMAGE"
+            "local://${IMAGE}" || true
+
 
           echo ""
-          echo "Scout report generated:"
-          echo "scout-report.md"
+          echo "Scout report:"
+          echo "------------------------------------------"
+
+          if [ -f scout-report.md ]; then
+            cat scout-report.md
+          else
+            echo "Scout report was not generated."
+          fi
+
+          echo "------------------------------------------"
 
 
       # ========================================================
-      # UPLOAD DOCKER SCOUT REPORT
+      # 5. UPLOAD DOCKER SCOUT REPORT
       # ========================================================
 
       - name: Upload Docker Scout vulnerability report
@@ -308,7 +344,7 @@ jobs:
 
 
       # ========================================================
-      # 4. SYFT
+      # 6. SYFT
       # Generate SBOM
       # ========================================================
 
@@ -321,7 +357,7 @@ jobs:
 
 
       # ========================================================
-      # 5. UPLOAD SBOM
+      # 7. UPLOAD SBOM
       # ========================================================
 
       - name: Upload SBOM to GitHub Artifact
@@ -334,48 +370,57 @@ jobs:
 
 
       # ========================================================
-      # 6. INSTALL COSIGN
+      # 8. INSTALL COSIGN
       # ========================================================
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@main
+        with:
+          cosign-release: "v3.0.6"
 
 
       # ========================================================
-      # 7. PUSH DOCKER IMAGE
+      # 9. PUSH DOCKER IMAGE
       # ========================================================
 
       - name: Push Docker Image
         run: |
 
-          echo "Pushing image:"
+          echo "=========================================="
+          echo "             DOCKER PUSH"
+          echo "=========================================="
+
+          echo "Pushing:"
           echo "$IMAGE"
 
           docker push "$IMAGE"
 
 
       # ========================================================
-      # 8. GET IMMUTABLE IMAGE DIGEST
+      # 10. GET IMMUTABLE IMAGE DIGEST
       # ========================================================
 
       - name: Get image digest
         id: digest
         run: |
 
-          echo "Getting immutable image digest..."
+          echo "=========================================="
+          echo "         GET IMAGE DIGEST"
+          echo "=========================================="
 
           DIGEST=$(docker inspect \
             --format='{{index .RepoDigests 0}}' \
             "$IMAGE")
 
-          echo "Image digest:"
+          echo "Immutable image:"
           echo "$DIGEST"
 
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
       # ========================================================
-      # 9. COSIGN SIGN IMAGE
+      # 11. COSIGN SIGN IMAGE
+      #
       # Keyless signing using GitHub OIDC
       # ========================================================
 
@@ -389,18 +434,36 @@ jobs:
           echo "             COSIGN SIGNING"
           echo "=========================================="
 
+          DIGEST="${{ steps.digest.outputs.digest }}"
+
           echo "Signing:"
-          echo "${{ steps.digest.outputs.digest }}"
+          echo "$DIGEST"
 
           cosign sign \
-            "${{ steps.digest.outputs.digest }}"
+            --yes \
+            "$DIGEST"
 
 
       # ========================================================
-      # 10. VERIFY COSIGN SIGNATURE
+      # 12. WAIT FOR REGISTRY PROPAGATION
+      # ========================================================
+
+      - name: Wait for signature propagation
+        run: |
+
+          echo "Waiting for Docker Hub signature to become visible..."
+
+          sleep 10
+
+
+      # ========================================================
+      # 13. COSIGN VERIFY IMAGE
       # ========================================================
 
       - name: Verify Docker Image Signature
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+
         run: |
 
           echo "=========================================="
@@ -408,23 +471,27 @@ jobs:
           echo "=========================================="
 
           echo "Verifying:"
-          echo "${{ steps.digest.outputs.digest }}"
+          echo "$DIGEST"
 
 
           cosign verify \
-            "${{ steps.digest.outputs.digest }}" \
+            "$DIGEST" \
             --certificate-identity-regexp \
-              'https://github.com/aleemahmad0508/platform/.+' \
+              "^https://github.com/aleemahmad0508/platform/.github/workflows/platform-ci-cd.yml@refs/heads/master$" \
             --certificate-oidc-issuer \
-              'https://token.actions.githubusercontent.com'
+              "https://token.actions.githubusercontent.com"
 
 
       # ========================================================
-      # INSTALL YQ
+      # 14. INSTALL YQ
       # ========================================================
 
       - name: Install yq
         run: |
+
+          echo "=========================================="
+          echo "                 YQ"
+          echo "=========================================="
 
           sudo wget -q \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
@@ -436,36 +503,51 @@ jobs:
 
 
       # ========================================================
-      # UPDATE HELM VALUES
+      # 15. UPDATE HELM VALUES
       # ========================================================
 
       - name: Update Helm Values
         run: |
 
-          echo "Updating Helm values..."
+          echo "=========================================="
+          echo "          UPDATE HELM VALUES"
+          echo "=========================================="
+
+          VALUES_FILE="applications/${APP}/helm/values.yaml"
+
+          echo "Updating:"
+          echo "$VALUES_FILE"
 
 
           yq -i \
             '.image.repository = "aleemahmad2/'"${APP}"'"' \
-            applications/${APP}/helm/values.yaml
+            "$VALUES_FILE"
 
 
           yq -i \
-            '.image.tag = "'"${{ github.sha }}"'"' \
-            applications/${APP}/helm/values.yaml
+            '.image.tag = "'"${GITHUB_SHA}"'"' \
+            "$VALUES_FILE"
 
 
           echo ""
           echo "Updated values.yaml:"
-          cat applications/${APP}/helm/values.yaml
+          echo "------------------------------------------"
+
+          cat "$VALUES_FILE"
+
+          echo "------------------------------------------"
 
 
       # ========================================================
-      # COMMIT HELM UPDATE
+      # 16. COMMIT HELM UPDATE
       # ========================================================
 
       - name: Commit Updated Helm Values
         run: |
+
+          echo "=========================================="
+          echo "        COMMIT HELM UPDATE"
+          echo "=========================================="
 
           git config user.name "github-actions"
 
@@ -473,7 +555,7 @@ jobs:
 
 
           git add \
-            applications/${APP}/helm/values.yaml
+            "applications/${APP}/helm/values.yaml"
 
 
           if git diff --cached --quiet; then
@@ -483,7 +565,7 @@ jobs:
           else
 
             git commit \
-              -m "Update ${APP} image to ${{ github.sha }}"
+              -m "Update ${APP} image to ${GITHUB_SHA}"
 
             echo "Helm values committed."
 
@@ -491,13 +573,15 @@ jobs:
 
 
       # ========================================================
-      # PUSH HELM UPDATE
+      # 17. PUSH HELM UPDATE
       # ========================================================
 
       - name: Push Helm Update
         run: |
 
-          echo "Pushing Helm update..."
+          echo "=========================================="
+          echo "          PUSH HELM UPDATE"
+          echo "=========================================="
 
           git push
 
@@ -551,7 +635,7 @@ jobs:
 
 
       # ========================================================
-      # REMOVE ARGO CD APPLICATION
+      # REMOVE ARGO CD APPLICATION MANIFEST
       # ========================================================
 
       - name: Remove Argo CD Application manifest

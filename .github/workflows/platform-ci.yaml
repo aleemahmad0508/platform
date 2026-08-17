@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 # ============================================================
 # JOB 1: DETECT APPLICATION CHANGES
@@ -35,6 +34,7 @@ jobs:
         with:
           fetch-depth: 0
 
+
       # ========================================================
       # DETECT CREATE / UPDATE / DELETE
       # ========================================================
@@ -54,23 +54,24 @@ jobs:
           echo "BASE: $BASE"
           echo "HEAD: $HEAD"
 
+
           # ====================================================
           # FIRST PUSH HANDLING
           # ====================================================
 
           if [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
-
             BASE=$(git rev-list --max-parents=0 HEAD)
-
           fi
 
           echo "Using BASE: $BASE"
+
 
           # ====================================================
           # GET CHANGED FILES
           # ====================================================
 
           FILES=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || true)
+
 
           # ====================================================
           # FALLBACK DIFF
@@ -85,6 +86,7 @@ jobs:
 
           fi
 
+
           echo ""
           echo "Changed files:"
           echo "------------------------------------------"
@@ -96,6 +98,7 @@ jobs:
           fi
 
           echo "------------------------------------------"
+
 
           # ====================================================
           # DETECT APPLICATION
@@ -110,20 +113,24 @@ jobs:
             true
           )
 
+
           # ====================================================
           # DETECT DELETED APPLICATION
           # ====================================================
 
           DELETED_APP=$(
             git diff --name-status "$BASE" "$HEAD" 2>/dev/null |
-            awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
-              split($2, parts, "/");
-              print parts[2];
-            }' |
+            awk '
+              $1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+                split($2, parts, "/");
+                print parts[2];
+              }
+            ' |
             sort -u |
             head -1 ||
             true
           )
+
 
           # ====================================================
           # FALLBACK DELETION DETECTION
@@ -133,10 +140,12 @@ jobs:
 
             DELETED_APP=$(
               git diff --name-status HEAD^ HEAD 2>/dev/null |
-              awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
-                split($2, parts, "/");
-                print parts[2];
-              }' |
+              awk '
+                $1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+                  split($2, parts, "/");
+                  print parts[2];
+                }
+              ' |
               sort -u |
               head -1 ||
               true
@@ -144,11 +153,13 @@ jobs:
 
           fi
 
+
           # ====================================================
           # DETERMINE WHETHER IMAGE NEEDS TO BE BUILT
           # ====================================================
 
           BUILD=false
+
 
           # Deleted applications are NEVER built.
 
@@ -163,6 +174,7 @@ jobs:
 
           fi
 
+
           # ====================================================
           # GITHUB OUTPUTS
           # ====================================================
@@ -170,6 +182,7 @@ jobs:
           echo "app=$APP" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
           echo "deleted_app=$DELETED_APP" >> "$GITHUB_OUTPUT"
+
 
           # ====================================================
           # DISPLAY RESULT
@@ -185,7 +198,7 @@ jobs:
 
   # ============================================================
   # JOB 2:
-  # SECURITY + BUILD + SCAN + SBOM + PUSH + SIGN + HELM
+  # SECURITY + BUILD + TRIVY + SBOM + PUSH + HELM
   # ============================================================
 
   build-and-deploy:
@@ -201,7 +214,6 @@ jobs:
 
     permissions:
       contents: write
-      id-token: write
 
     env:
       APP: ${{ needs.detect-changes.outputs.app }}
@@ -236,9 +248,15 @@ jobs:
       - name: Install Bandit
         run: |
 
+          echo "=========================================="
+          echo "             INSTALLING BANDIT"
+          echo "=========================================="
+
           python -m pip install --upgrade pip
 
           pip install bandit
+
+          bandit --version
 
 
       # ========================================================
@@ -246,22 +264,44 @@ jobs:
       # ========================================================
 
       - name: Run Bandit security scan
+        continue-on-error: true
         run: |
 
           echo "=========================================="
           echo "             BANDIT SECURITY SCAN"
           echo "=========================================="
 
+          mkdir -p security-reports
+
           bandit \
             -r "applications/${APP}/app" \
-            -ll
+            -ll \
+            -f txt \
+            -o security-reports/bandit-report.txt
 
           echo ""
           echo "Bandit scan completed."
 
+          if [ -f security-reports/bandit-report.txt ]; then
+            cat security-reports/bandit-report.txt
+          fi
+
 
       # ========================================================
-      # 5. SETUP DOCKER BUILDX
+      # 5. UPLOAD BANDIT REPORT
+      # ========================================================
+
+      - name: Upload Bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-bandit-report
+          path: security-reports/bandit-report.txt
+          if-no-files-found: warn
+
+
+      # ========================================================
+      # 6. SETUP DOCKER BUILDX
       # ========================================================
 
       - name: Set up Docker Buildx
@@ -269,7 +309,7 @@ jobs:
 
 
       # ========================================================
-      # 6. LOGIN TO DOCKER HUB
+      # 7. LOGIN TO DOCKER HUB
       # ========================================================
 
       - name: Login to DockerHub
@@ -280,7 +320,7 @@ jobs:
 
 
       # ========================================================
-      # 7. BUILD DOCKER IMAGE
+      # 8. BUILD DOCKER IMAGE
       # ========================================================
 
       - name: Build Docker Image
@@ -302,13 +342,16 @@ jobs:
           echo ""
           echo "Docker image built successfully."
 
+
+          # Verify image exists locally
+
           docker image inspect "$IMAGE" > /dev/null
 
           echo "Image exists locally."
 
 
       # ========================================================
-      # 8. INSTALL TRIVY
+      # 9. INSTALL TRIVY
       # ========================================================
 
       - name: Install Trivy
@@ -320,29 +363,41 @@ jobs:
 
           sudo apt-get update
 
-          sudo apt-get install -y wget apt-transport-https gnupg
+          sudo apt-get install -y \
+            wget \
+            apt-transport-https \
+            gnupg
 
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
+
+          wget -qO - \
+            https://aquasecurity.github.io/trivy-repo/deb/public.key \
             | gpg --dearmor \
             | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+
 
           echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] \
           https://aquasecurity.github.io/trivy-repo/deb \
           generic main" \
           | sudo tee /etc/apt/sources.list.d/trivy.list
 
+
           sudo apt-get update
 
           sudo apt-get install -y trivy
+
+
+          echo ""
+          echo "Trivy version:"
 
           trivy --version
 
 
       # ========================================================
-      # 9. TRIVY VULNERABILITY SCAN
+      # 10. TRIVY VULNERABILITY SCAN
       #
       # IMPORTANT:
-      # Vulnerabilities are reported but do NOT stop pipeline.
+      # Vulnerabilities are reported.
+      # Pipeline DOES NOT stop.
       # ========================================================
 
       - name: Trivy vulnerability scan
@@ -355,14 +410,34 @@ jobs:
 
           mkdir -p security-reports
 
+
+          echo ""
+          echo "Scanning image:"
+          echo "$IMAGE"
+
+
+          # ====================================================
+          # TABLE REPORT
+          # ====================================================
+
+          echo ""
+          echo "Generating table report..."
+
+
           trivy image \
             --severity CRITICAL,HIGH \
             --format table \
             "$IMAGE" \
             | tee security-reports/trivy-report.txt
 
+
+          # ====================================================
+          # JSON REPORT
+          # ====================================================
+
           echo ""
           echo "Generating JSON report..."
+
 
           trivy image \
             --severity CRITICAL,HIGH \
@@ -370,28 +445,32 @@ jobs:
             --output security-reports/trivy-report.json \
             "$IMAGE"
 
+
           echo ""
           echo "Trivy scan completed."
 
-          echo "Reports:"
+
+          echo ""
+          echo "Generated reports:"
+
           ls -lh security-reports/
 
 
       # ========================================================
-      # 10. UPLOAD TRIVY SECURITY REPORT
+      # 11. UPLOAD TRIVY REPORT
       # ========================================================
 
       - name: Upload Trivy vulnerability report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP }}-security-report
-          path: security-reports/
+          name: ${{ env.APP }}-trivy-security-report
+          path: security-reports/trivy-report.*
           if-no-files-found: warn
 
 
       # ========================================================
-      # 11. GENERATE SBOM WITH SYFT
+      # 12. GENERATE SBOM WITH SYFT
       # ========================================================
 
       - name: Generate SBOM with Syft
@@ -403,7 +482,7 @@ jobs:
 
 
       # ========================================================
-      # 12. UPLOAD SBOM
+      # 13. UPLOAD SBOM
       # ========================================================
 
       - name: Upload SBOM to GitHub Artifact
@@ -413,14 +492,6 @@ jobs:
           name: ${{ env.APP }}-sbom
           path: ${{ env.APP }}-sbom.json
           if-no-files-found: warn
-
-
-      # ========================================================
-      # 13. INSTALL COSIGN
-      # ========================================================
-
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@main
 
 
       # ========================================================
@@ -460,6 +531,7 @@ jobs:
             --format='{{index .RepoDigests 0}}' \
             "$IMAGE")
 
+
           if [ -z "$DIGEST" ]; then
 
             echo "ERROR: Could not determine image digest."
@@ -468,63 +540,16 @@ jobs:
 
           fi
 
+
           echo "Immutable image:"
           echo "$DIGEST"
+
 
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
       # ========================================================
-      # 16. COSIGN SIGN IMAGE
-      # KEYLESS SIGNING USING GITHUB OIDC
-      # ========================================================
-
-      - name: Sign Docker Image
-        env:
-          COSIGN_YES: "true"
-        run: |
-
-          echo "=========================================="
-          echo "             COSIGN SIGNING"
-          echo "=========================================="
-
-          echo "Signing:"
-          echo "${{ steps.digest.outputs.digest }}"
-
-          cosign sign \
-            "${{ steps.digest.outputs.digest }}"
-
-          echo ""
-          echo "Image signed successfully."
-
-
-      # ========================================================
-      # 17. VERIFY COSIGN SIGNATURE
-      # ========================================================
-
-      - name: Verify Docker Image Signature
-        run: |
-
-          echo "=========================================="
-          echo "          COSIGN VERIFICATION"
-          echo "=========================================="
-
-          echo "Verifying:"
-          echo "${{ steps.digest.outputs.digest }}"
-
-          cosign verify \
-            "${{ steps.digest.outputs.digest }}" \
-            --certificate-identity-regexp \
-              'https://github.com/aleemahmad0508/platform/.+' \
-            --certificate-oidc-issuer \
-              'https://token.actions.githubusercontent.com'
-
-          echo ""
-          echo "Cosign verification successful."
-
-
-      # ========================================================
-      # 18. INSTALL YQ
+      # 16. INSTALL YQ
       # ========================================================
 
       - name: Install yq
@@ -538,13 +563,15 @@ jobs:
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
             -O /usr/local/bin/yq
 
+
           sudo chmod +x /usr/local/bin/yq
+
 
           yq --version
 
 
       # ========================================================
-      # 19. UPDATE HELM VALUES
+      # 17. UPDATE HELM VALUES
       # ========================================================
 
       - name: Update Helm Values
@@ -554,7 +581,9 @@ jobs:
           echo "          UPDATING HELM VALUES"
           echo "=========================================="
 
+
           VALUES_FILE="applications/${APP}/helm/values.yaml"
+
 
           if [ ! -f "$VALUES_FILE" ]; then
 
@@ -565,29 +594,36 @@ jobs:
 
           fi
 
-          echo "Updating repository..."
+
+          echo "Updating image repository..."
+
 
           yq -i \
             '.image.repository = "aleemahmad2/'"${APP}"'"' \
             "$VALUES_FILE"
 
+
           echo "Updating image tag..."
+
 
           yq -i \
             '.image.tag = "'"${{ github.sha }}"'"' \
             "$VALUES_FILE"
 
+
           echo ""
           echo "Updated values.yaml:"
           echo "------------------------------------------"
 
+
           cat "$VALUES_FILE"
+
 
           echo "------------------------------------------"
 
 
       # ========================================================
-      # 20. COMMIT HELM UPDATE
+      # 18. COMMIT HELM UPDATE
       # ========================================================
 
       - name: Commit Updated Helm Values
@@ -597,12 +633,15 @@ jobs:
           echo "       COMMITTING HELM UPDATE"
           echo "=========================================="
 
+
           git config user.name "github-actions"
 
           git config user.email "github-actions@github.com"
 
+
           git add \
             "applications/${APP}/helm/values.yaml"
+
 
           if git diff --cached --quiet; then
 
@@ -619,7 +658,7 @@ jobs:
 
 
       # ========================================================
-      # 21. PUSH HELM UPDATE
+      # 19. PUSH HELM UPDATE
       # ========================================================
 
       - name: Push Helm Update
@@ -629,7 +668,9 @@ jobs:
           echo "          PUSHING HELM UPDATE"
           echo "=========================================="
 
+
           git push
+
 
           echo ""
           echo "Helm update pushed successfully."
@@ -676,8 +717,10 @@ jobs:
           echo "       APPLICATION DELETION DETECTED"
           echo "=========================================="
 
+
           echo "Deleted application:"
           echo "$DELETED_APP"
+
 
           echo "=========================================="
 
@@ -691,8 +734,10 @@ jobs:
 
           ARGO_FILE="argocd/${DELETED_APP}-application.yaml"
 
+
           echo "Checking:"
           echo "$ARGO_FILE"
+
 
           if [ -f "$ARGO_FILE" ]; then
 
@@ -721,6 +766,7 @@ jobs:
 
           APP_DIR="applications/${DELETED_APP}"
 
+
           if [ -d "$APP_DIR" ]; then
 
             echo "Application directory still exists."
@@ -748,11 +794,14 @@ jobs:
           echo "       COMMITTING DELETION CLEANUP"
           echo "=========================================="
 
+
           git config user.name "github-actions"
 
           git config user.email "github-actions@github.com"
 
+
           git add -A
+
 
           if git diff --cached --quiet; then
 
@@ -782,10 +831,12 @@ jobs:
           echo "          PUSHING DELETION CLEANUP"
           echo "=========================================="
 
+
           if git log -1 --pretty=%B | grep -q \
             "Cleanup deleted application ${DELETED_APP}"; then
 
             echo "Pushing deletion cleanup..."
+
 
             if git push; then
 

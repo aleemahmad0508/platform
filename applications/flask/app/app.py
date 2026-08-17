@@ -45,7 +45,7 @@ FlaskInstrumentor().instrument_app(app)
 # -----------------------------
 @app.route("/")
 def home():
-    return "Welcome to flask"
+    return "Welcome to flask hello jand "
 
 @app.route("/health")
 def health():

@@ -1,0 +1,16 @@
+# platform/opencost/opencost-values.yaml
+
+opencost:
+  prometheus:
+    internal:
+      enabled: true
+      namespaceName: "monitoring"
+      # Points to the direct open headless cluster service
+      serviceName: "prometheus-operated"
+      port: 9090
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: prometheus
+

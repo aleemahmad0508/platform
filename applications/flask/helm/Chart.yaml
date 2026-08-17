@@ -1,6 +1,0 @@
-apiVersion: v2
-name: flask-chart
-description: Flask Demo Application
-type: application
-version: 0.1.6
-appVersion: "1.6"

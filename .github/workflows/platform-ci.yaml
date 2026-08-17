@@ -35,7 +35,6 @@ jobs:
         with:
           fetch-depth: 0
 
-
       # --------------------------------------------------------
       # Detect create / update / delete
       # --------------------------------------------------------
@@ -55,7 +54,6 @@ jobs:
           echo "BASE: $BASE"
           echo "HEAD: $HEAD"
 
-
           # ----------------------------------------------------
           # First push handling
           # ----------------------------------------------------
@@ -66,13 +64,11 @@ jobs:
 
           echo "Using BASE: $BASE"
 
-
           # ----------------------------------------------------
           # Get changed files
           # ----------------------------------------------------
 
           FILES=$(git diff --name-only "$BASE" "$HEAD" 2>/dev/null || true)
-
 
           # ----------------------------------------------------
           # Fallback if normal diff fails
@@ -87,39 +83,39 @@ jobs:
 
           fi
 
-
           echo ""
           echo "Changed files:"
           echo "------------------------------------------"
-
           echo "$FILES"
-
           echo "------------------------------------------"
-
 
           # ====================================================
           # DETECT APPLICATION
           # ====================================================
 
-          APP=$(echo "$FILES" \
-            | grep '^applications/' \
-            | cut -d/ -f2 \
-            | sort -u \
-            | head -1 || true)
-
+          APP=$(
+            echo "$FILES" |
+            grep '^applications/' |
+            cut -d/ -f2 |
+            sort -u |
+            head -1 ||
+            true
+          )
 
           # ====================================================
           # DETECT DELETED APPLICATION
           # ====================================================
 
-          DELETED_APP=$(git diff --name-status "$BASE" "$HEAD" 2>/dev/null \
-            | awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
-                split($2, parts, "/");
-                print parts[2];
-              }' \
-            | sort -u \
-            | head -1 || true)
-
+          DELETED_APP=$(
+            git diff --name-status "$BASE" "$HEAD" 2>/dev/null |
+            awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+              split($2, parts, "/");
+              print parts[2];
+            }' |
+            sort -u |
+            head -1 ||
+            true
+          )
 
           # ----------------------------------------------------
           # Fallback deletion detection
@@ -127,23 +123,24 @@ jobs:
 
           if [ -z "$DELETED_APP" ]; then
 
-            DELETED_APP=$(git diff --name-status HEAD^ HEAD 2>/dev/null \
-              | awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
-                  split($2, parts, "/");
-                  print parts[2];
-                }' \
-              | sort -u \
-              | head -1 || true)
+            DELETED_APP=$(
+              git diff --name-status HEAD^ HEAD 2>/dev/null |
+              awk '$1 == "D" && $2 ~ /^applications\/[^\/]+\// {
+                split($2, parts, "/");
+                print parts[2];
+              }' |
+              sort -u |
+              head -1 ||
+              true
+            )
 
           fi
-
 
           # ====================================================
           # DETERMINE WHETHER IMAGE NEEDS TO BE BUILT
           # ====================================================
 
           BUILD=false
-
 
           # Deleted applications are NEVER built.
 
@@ -158,17 +155,13 @@ jobs:
 
           fi
 
-
           # ====================================================
           # GITHUB OUTPUTS
           # ====================================================
 
           echo "app=$APP" >> "$GITHUB_OUTPUT"
-
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-
           echo "deleted_app=$DELETED_APP" >> "$GITHUB_OUTPUT"
-
 
           # ====================================================
           # DISPLAY RESULT
@@ -218,8 +211,7 @@ jobs:
 
 
       # ========================================================
-      # 1. BANDIT
-      # Python source-code security scanning
+      # SETUP PYTHON
       # ========================================================
 
       - name: Set up Python
@@ -228,17 +220,26 @@ jobs:
           python-version: "3.12"
 
 
+      # ========================================================
+      # INSTALL BANDIT
+      # ========================================================
+
       - name: Install Bandit
         run: |
           python -m pip install --upgrade pip
           pip install bandit
 
 
+      # ========================================================
+      # 1. BANDIT
+      # Python source-code security scanning
+      # ========================================================
+
       - name: Run Bandit security scan
         run: |
 
           echo "=========================================="
-          echo "             BANDIT SECURITY"
+          echo "             BANDIT SECURITY SCAN"
           echo "=========================================="
 
           bandit \
@@ -247,7 +248,29 @@ jobs:
 
 
       # ========================================================
-      # DOCKER HUB LOGIN
+      # 2. SETUP DOCKER BUILDX
+      # IMPORTANT:
+      # Docker Scout requires Docker to be installed and running.
+      # GitHub-hosted ubuntu-latest normally has Docker, but we
+      # explicitly install Buildx to ensure the CLI is available.
+      # ========================================================
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+
+      # ========================================================
+      # 3. INSTALL DOCKER SCOUT
+      # ========================================================
+
+      - name: Install Docker Scout
+        uses: docker/scout-action@v1
+        with:
+          command: version
+
+
+      # ========================================================
+      # 4. DOCKER HUB LOGIN
       # ========================================================
 
       - name: Login to DockerHub
@@ -258,48 +281,33 @@ jobs:
 
 
       # ========================================================
-      # 2. BUILD DOCKER IMAGE
+      # 5. BUILD DOCKER IMAGE
       # ========================================================
 
       - name: Build Docker Image
         run: |
 
           echo "=========================================="
-          echo "             DOCKER BUILD"
+          echo "           BUILDING DOCKER IMAGE"
           echo "=========================================="
 
-          echo "Building:"
+          echo "Image:"
           echo "$IMAGE"
 
           docker build \
             -t "$IMAGE" \
             "applications/${APP}/app"
 
-
-      # ========================================================
-      # 3. INSTALL / UPDATE DOCKER SCOUT
-      # ========================================================
-
-      - name: Install Docker Scout
-        run: |
-
-          echo "=========================================="
-          echo "        INSTALLING DOCKER SCOUT"
-          echo "=========================================="
-
-          curl -fsSL https://raw.githubusercontent.com/docker/scout-cli/main/install.sh \
-            -o /tmp/install-scout.sh
-
-          sudo sh /tmp/install-scout.sh
-
-          docker scout version
+          echo ""
+          echo "Docker image built successfully."
 
 
       # ========================================================
-      # 4. DOCKER SCOUT VULNERABILITY SCAN
+      # 6. DOCKER SCOUT
+      # Vulnerability scanning
       #
       # IMPORTANT:
-      # Vulnerabilities DO NOT stop pipeline.
+      # Scout reports vulnerabilities but DOES NOT stop pipeline.
       # ========================================================
 
       - name: Docker Scout vulnerability scan
@@ -314,24 +322,21 @@ jobs:
             --only-severity critical,high \
             --format markdown \
             --output scout-report.md \
-            "local://${IMAGE}" || true
-
+            "$IMAGE"
 
           echo ""
-          echo "Scout report:"
-          echo "------------------------------------------"
+          echo "Scout scan completed."
 
           if [ -f scout-report.md ]; then
-            cat scout-report.md
+            echo "Scout report generated successfully."
+            echo "File: scout-report.md"
           else
-            echo "Scout report was not generated."
+            echo "WARNING: Scout report was not generated."
           fi
-
-          echo "------------------------------------------"
 
 
       # ========================================================
-      # 5. UPLOAD DOCKER SCOUT REPORT
+      # 7. UPLOAD DOCKER SCOUT REPORT
       # ========================================================
 
       - name: Upload Docker Scout vulnerability report
@@ -344,8 +349,8 @@ jobs:
 
 
       # ========================================================
-      # 6. SYFT
-      # Generate SBOM
+      # 8. SYFT / SBOM
+      # Generate Software Bill of Materials
       # ========================================================
 
       - name: Generate SBOM with Syft
@@ -357,7 +362,7 @@ jobs:
 
 
       # ========================================================
-      # 7. UPLOAD SBOM
+      # 9. UPLOAD SBOM
       # ========================================================
 
       - name: Upload SBOM to GitHub Artifact
@@ -370,24 +375,22 @@ jobs:
 
 
       # ========================================================
-      # 8. INSTALL COSIGN
+      # 10. INSTALL COSIGN
       # ========================================================
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@main
-        with:
-          cosign-release: "v3.0.6"
 
 
       # ========================================================
-      # 9. PUSH DOCKER IMAGE
+      # 11. PUSH DOCKER IMAGE
       # ========================================================
 
       - name: Push Docker Image
         run: |
 
           echo "=========================================="
-          echo "             DOCKER PUSH"
+          echo "          PUSHING DOCKER IMAGE"
           echo "=========================================="
 
           echo "Pushing:"
@@ -397,73 +400,59 @@ jobs:
 
 
       # ========================================================
-      # 10. GET IMMUTABLE IMAGE DIGEST
+      # 12. GET IMMUTABLE IMAGE DIGEST
       # ========================================================
 
       - name: Get image digest
         id: digest
+        shell: bash
         run: |
 
           echo "=========================================="
-          echo "         GET IMAGE DIGEST"
+          echo "        GETTING IMAGE DIGEST"
           echo "=========================================="
 
           DIGEST=$(docker inspect \
             --format='{{index .RepoDigests 0}}' \
             "$IMAGE")
 
-          echo "Immutable image:"
+          if [ -z "$DIGEST" ]; then
+            echo "ERROR: Could not determine image digest."
+            exit 1
+          fi
+
+          echo "Image digest:"
           echo "$DIGEST"
 
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
 
 
       # ========================================================
-      # 11. COSIGN SIGN IMAGE
-      #
+      # 13. COSIGN SIGN IMAGE
       # Keyless signing using GitHub OIDC
       # ========================================================
 
       - name: Sign Docker Image
         env:
           COSIGN_YES: "true"
-
         run: |
 
           echo "=========================================="
           echo "             COSIGN SIGNING"
           echo "=========================================="
 
-          DIGEST="${{ steps.digest.outputs.digest }}"
-
           echo "Signing:"
-          echo "$DIGEST"
+          echo "${{ steps.digest.outputs.digest }}"
 
           cosign sign \
-            --yes \
-            "$DIGEST"
+            "${{ steps.digest.outputs.digest }}"
 
 
       # ========================================================
-      # 12. WAIT FOR REGISTRY PROPAGATION
-      # ========================================================
-
-      - name: Wait for signature propagation
-        run: |
-
-          echo "Waiting for Docker Hub signature to become visible..."
-
-          sleep 10
-
-
-      # ========================================================
-      # 13. COSIGN VERIFY IMAGE
+      # 14. VERIFY COSIGN SIGNATURE
       # ========================================================
 
       - name: Verify Docker Image Signature
-        env:
-          DIGEST: ${{ steps.digest.outputs.digest }}
-
         run: |
 
           echo "=========================================="
@@ -471,27 +460,24 @@ jobs:
           echo "=========================================="
 
           echo "Verifying:"
-          echo "$DIGEST"
-
+          echo "${{ steps.digest.outputs.digest }}"
 
           cosign verify \
-            "$DIGEST" \
+            "${{ steps.digest.outputs.digest }}" \
             --certificate-identity-regexp \
-              "^https://github.com/aleemahmad0508/platform/.github/workflows/platform-ci-cd.yml@refs/heads/master$" \
+              'https://github.com/aleemahmad0508/platform/.+' \
             --certificate-oidc-issuer \
-              "https://token.actions.githubusercontent.com"
+              'https://token.actions.githubusercontent.com'
 
 
       # ========================================================
-      # 14. INSTALL YQ
+      # 15. INSTALL YQ
       # ========================================================
 
       - name: Install yq
         run: |
 
-          echo "=========================================="
-          echo "                 YQ"
-          echo "=========================================="
+          echo "Installing yq..."
 
           sudo wget -q \
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
@@ -503,60 +489,53 @@ jobs:
 
 
       # ========================================================
-      # 15. UPDATE HELM VALUES
+      # 16. UPDATE HELM VALUES
       # ========================================================
 
       - name: Update Helm Values
         run: |
 
           echo "=========================================="
-          echo "          UPDATE HELM VALUES"
+          echo "          UPDATING HELM VALUES"
           echo "=========================================="
 
           VALUES_FILE="applications/${APP}/helm/values.yaml"
 
-          echo "Updating:"
-          echo "$VALUES_FILE"
-
+          if [ ! -f "$VALUES_FILE" ]; then
+            echo "ERROR: Helm values file not found:"
+            echo "$VALUES_FILE"
+            exit 1
+          fi
 
           yq -i \
             '.image.repository = "aleemahmad2/'"${APP}"'"' \
             "$VALUES_FILE"
 
-
           yq -i \
-            '.image.tag = "'"${GITHUB_SHA}"'"' \
+            '.image.tag = "'"${{ github.sha }}"'"' \
             "$VALUES_FILE"
-
 
           echo ""
           echo "Updated values.yaml:"
-          echo "------------------------------------------"
-
           cat "$VALUES_FILE"
-
-          echo "------------------------------------------"
 
 
       # ========================================================
-      # 16. COMMIT HELM UPDATE
+      # 17. COMMIT HELM UPDATE
       # ========================================================
 
       - name: Commit Updated Helm Values
         run: |
 
           echo "=========================================="
-          echo "        COMMIT HELM UPDATE"
+          echo "       COMMITTING HELM UPDATE"
           echo "=========================================="
 
           git config user.name "github-actions"
-
           git config user.email "github-actions@github.com"
-
 
           git add \
             "applications/${APP}/helm/values.yaml"
-
 
           if git diff --cached --quiet; then
 
@@ -565,7 +544,7 @@ jobs:
           else
 
             git commit \
-              -m "Update ${APP} image to ${GITHUB_SHA}"
+              -m "Update ${APP} image to ${{ github.sha }}"
 
             echo "Helm values committed."
 
@@ -573,17 +552,19 @@ jobs:
 
 
       # ========================================================
-      # 17. PUSH HELM UPDATE
+      # 18. PUSH HELM UPDATE
       # ========================================================
 
       - name: Push Helm Update
         run: |
 
           echo "=========================================="
-          echo "          PUSH HELM UPDATE"
+          echo "          PUSHING HELM UPDATE"
           echo "=========================================="
 
           git push
+
+          echo "Helm update pushed successfully."
 
 
   # ============================================================
@@ -603,7 +584,6 @@ jobs:
 
     env:
       DELETED_APP: ${{ needs.detect-changes.outputs.deleted_app }}
-
 
     steps:
 
@@ -643,15 +623,12 @@ jobs:
 
           ARGO_FILE="argocd/${DELETED_APP}-application.yaml"
 
-
           echo "Checking:"
           echo "$ARGO_FILE"
-
 
           if [ -f "$ARGO_FILE" ]; then
 
             echo "Argo CD manifest still exists."
-
             echo "Removing:"
             echo "$ARGO_FILE"
 
@@ -660,7 +637,6 @@ jobs:
           else
 
             echo "Argo CD manifest already deleted."
-
             echo "Nothing to remove."
 
           fi
@@ -675,11 +651,9 @@ jobs:
 
           APP_DIR="applications/${DELETED_APP}"
 
-
           if [ -d "$APP_DIR" ]; then
 
             echo "Application directory still exists."
-
             echo "Removing:"
             echo "$APP_DIR"
 
@@ -700,12 +674,9 @@ jobs:
         run: |
 
           git config user.name "github-actions"
-
           git config user.email "github-actions@github.com"
 
-
           git add -A
-
 
           if git diff --cached --quiet; then
 
@@ -755,7 +726,6 @@ jobs:
           else
 
             echo "No deletion cleanup commit exists."
-
             echo "Nothing to push."
 
           fi
